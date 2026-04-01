@@ -19,9 +19,9 @@ Claude-ACE (Adaptive Context Engine) 是一个从第一性原理出发构建的 
 
 ## 🚀 五大核心能力 (v0.3.0 完整集成)
 
-| 维度 | 传统助手 (如 Claude Code) | Claude-ACE | 核心突破 |
+| 维度 | Claude Code | Claude-ACE | 核心突破 |
 |------|-------------------|--------------------|----------|
-| **一：上下文理解** | 文本检索 (Grep/Glob) | **活体系统语义图谱** | AST 骨架 + 按需展开 + `CallGraph` 蝴蝶效应分析 |
+| **一：上下文理解** | 文本检索 (Grep/Glob) | **活体系统语义图谱** | AST 骨架 + 按需展开 + `CallGraph` 蝴蝶效应分析，Token 直降 **90%** |
 | **二：运行模式** | 被动唤醒的 REPL | **主动演化与自我修复** | 后台 `Watchdog` 守护进程，真实运行 `npm test` 并自动修复 |
 | **三：代码生成** | 直接修改 → 报错 → 重试 | **意图驱动的验证闭环** | 意图 → 测试 → 实现 → 自愈，骨架失败自动降级全量上下文 |
 | **四：架构思维** | 顺从的"打字员" | **批判性思维架构师** | `CriticalArchitect` 拒绝糟糕设计，主动提供安全/性能更优的建议 |
@@ -39,8 +39,8 @@ Claude-ACE (Adaptive Context Engine) 是一个从第一性原理出发构建的 
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/OpenDemon/ace-coder.git
-cd ace-coder
+git clone https://github.com/OpenDemon/claude-ace.git
+cd claude-ace
 
 # 2. 安装依赖
 npm install
