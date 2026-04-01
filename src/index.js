@@ -634,7 +634,7 @@ async function handleModel(args, rl) {
     console.log(chalk.gray('  切换：/model <模型名称>  例：/model deepseek-chat'));
     console.log('');
     for (const provider of MODEL_PROVIDERS) {
-      console.log('  ' + chalk.bold.yellow(provider.name) + chalk.gray('  申请 Key：') + chalk.blue.underline(provider.apiUrl));
+      console.log('  ' + chalk.bold.yellow(provider.name) + chalk.gray('  申请 Key：') + chalk.cyan(provider.apiUrl));
       for (const m of provider.models) {
         const cur = m.id === currentModel ? chalk.green(' ← 当前') : '';
         const priceStr = m.price.input === 0 ? chalk.green('免费') : chalk.gray('¥' + m.price.input + '/K入');
@@ -655,58 +655,51 @@ async function handleModel(args, rl) {
   console.log('');
   console.log(chalk.bold.white(' 模型已切换为：') + chalk.cyan(newModel) + (provider ? chalk.gray(' (' + provider.name + ')') : ''));
 
-  if (provider) {
-    // 设置 Base URL
-    process.env.OPENAI_BASE_URL = provider.envBase;
-    console.log(chalk.gray('  Base URL 已自动设置：') + chalk.cyan(provider.envBase));
+  if (!provider) {
+    console.log(chalk.gray('  未识别的模型，请手动设置 OPENAI_BASE_URL 和 OPENAI_API_KEY。'));
+    console.log('');
+    return;
+  }
+
+  // 设置 Base URL
+  process.env.OPENAI_BASE_URL = provider.envBase;
+  console.log(chalk.gray('  Base URL 已自动设置：') + chalk.cyan(provider.envBase));
+  console.log('');
+
+  // 用原生 readline.question 进行交互，避免 @inquirer/prompts 与主 rl 共用 stdin 冲突
+  const rlAsk = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
+
+  const currentKey = process.env.OPENAI_API_KEY || '';
+  let shouldSetKey = !currentKey;
+
+  if (currentKey) {
+    // 已有 Key，问是否更换
+    process.stdout.write(chalk.gray('  当前已有 API Key，是否为 ' + provider.name + ' 输入新的 Key？') + chalk.cyan(' [y/N] '));
+    const ans = await rlAsk('');
+    shouldSetKey = ans.trim().toLowerCase() === 'y';
+  }
+
+  if (shouldSetKey) {
+    console.log('');
+    console.log(chalk.bold.white('  请先到以下地址申请 / 查看 API Key：'));
+    console.log('  ' + chalk.bold.cyan('➡  ' + provider.apiUrl));
     console.log('');
 
-    // 检查当前 Key 是否已设置
-    const currentKey = process.env.OPENAI_API_KEY || '';
-    const needNewKey = !currentKey;
-
-    // 判断是否是切换到不同提供商（可能需要新 Key）
-    rl.pause();
-    try {
-      let shouldSetKey = needNewKey;
-      if (!needNewKey) {
-        // 已有 Key，问是否更换
-        const change = await select({
-          message: '当前已有 API Key，是否为 ' + provider.name + ' 输入新的 Key？',
-          choices: [
-            { name: '是，输入新 Key', value: true },
-            { name: '否，保留当前 Key', value: false },
-          ],
-          theme: { prefix: '', style: { highlight: (t) => chalk.bold.cyan(t) } }
-        });
-        shouldSetKey = change;
+    let trimmedKey = '';
+    while (trimmedKey.length < 8) {
+      process.stdout.write(chalk.gray('  粘贴 API Key：'));
+      const raw = await rlAsk('');
+      trimmedKey = raw.trim();
+      if (trimmedKey.length < 8) {
+        console.log(chalk.yellow('  Key 过短，请重新输入。'));
       }
+    }
 
-      if (shouldSetKey) {
-        console.log('');
-        console.log(chalk.bold.white('  请先到以下地址申请 API Key：'));
-        console.log('  ' + chalk.bold.cyan('➡  ' + provider.apiUrl));
-        console.log('');
-        console.log(chalk.gray('  申请完成后，将 Key 粘贴到下方：'));
-
-        const apiKeyInput = await input({
-          message: '  输入 API Key',
-          validate: (v) => v.trim().length > 8 ? true : 'Key 过短，请重新输入',
-          theme: { prefix: '', style: { highlight: (t) => chalk.bold.cyan(t) } }
-        });
-
-        const trimmedKey = apiKeyInput.trim();
-        process.env.OPENAI_API_KEY = trimmedKey;
-        console.log(chalk.green('\n  ✓ API Key 已设置，当前会话立即生效。'));
-        console.log(chalk.gray('  提示：重启后需重新设置。建议写入 .env 文件或系统环境变量。'));
-      } else {
-        console.log(chalk.gray('  保留当前 Key，如果出现 401 错误请重新运行 /model ' + newModel + ' 更换 Key。'));
-      }
-    } catch (_) {}
-    rl.resume();
+    process.env.OPENAI_API_KEY = trimmedKey;
+    console.log(chalk.green('  ✓ API Key 已设置，当前会话立即生效。'));
+    console.log(chalk.gray('  提示：重启后需重新设置。建议写入系统环境变量。'));
   } else {
-    // 自定义模型，提示手动设置
-    console.log(chalk.gray('  未识别的模型，请手动设置 OPENAI_BASE_URL 和 OPENAI_API_KEY。'));
+    console.log(chalk.gray('  保留当前 Key。如果出现 401 错误，输入 /model ' + newModel + ' 重新设置。'));
   }
   console.log('');
 }
