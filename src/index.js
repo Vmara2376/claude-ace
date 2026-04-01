@@ -32,10 +32,11 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import { execSync } from 'child_process';
+import { Worker } from 'worker_threads';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const VERSION = '0.8.1';
+const VERSION = '0.8.3';
 let currentModel = process.env.OPENAI_MODEL || 'glm-5-turbo';
 
 // 按提供商分别存储 API Key 的配置文件（~/.ace-keys.json）
@@ -882,118 +883,104 @@ async function main() {
     }
   }
 
-  const agent = new Agent();
+  // ─── Worker Thread 架构 ───────────────────────────────────────────────────
+  // Agent 在独立 Worker Thread 中运行，主线程的 readline 始终保持响应。
+  // 用户可以在 Agent 执行期间输入新指令（Ctrl+C 取消，或等待完成后继续）。
+
+  const WORKER_PATH = path.join(__dirname, 'agent', 'AgentWorker.js');
+  const agentWorker = new Worker(WORKER_PATH, {
+    workerData: {
+      env: {
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+        OPENAI_MODEL: process.env.OPENAI_MODEL || 'glm-5-turbo'
+      }
+    }
+  });
+
+  // 主线程持有的消息历史副本（与 Worker 双向同步）
+  let sharedMessages = [];
+  let sharedStats = { inputTokens: 0, outputTokens: 0, toolCalls: 0 };
+
+  // 兼容旧代码：提供 agent-like 接口供 handleCommand 使用
+  const agent = {
+    get messages() { return sharedMessages; },
+    set messages(v) { sharedMessages = v; },
+    get stats() { return sharedStats; },
+    resetStats() { sharedStats = { inputTokens: 0, outputTokens: 0, toolCalls: 0 }; }
+  };
+
   const watchdog = new WatchdogAgent(PROJECT_ROOT, { intervalMs: 300000 });
   watchdog.start();
 
   let sessionId = sm.create(process.cwd());
   let rewindStack = [];
 
-  // 当前正在运行的 Agent 任务的 AbortController
-  let currentAbortController = null;
+  // Worker 是否正在执行任务
+  let workerBusy = false;
 
-  process.on('SIGINT', () => {
-    if (currentAbortController) {
-      // Agent 正在运行：Ctrl+C 取消当前任务，不退出
-      currentAbortController.abort();
+  // isTTY 保护
+  const isTTY = !!process.stdout.isTTY;
+
+  // ─── Worker 消息处理 ────────────────────────────────────────────────────────
+  let streamedText = '';
+  let toolCount = 0;
+  let toolLineActive = false;
+
+  const clearToolLine = () => {
+    if (toolLineActive && isTTY) {
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+      toolLineActive = false;
     } else {
-      // 空闲状态：Ctrl+C 退出程序
-      sm.save(sessionId, agent.messages, agent.stats);
-      console.log('\n' + chalk.gray(' 再见！') + '\n');
-      watchdog.stop();
-      process.exit(0);
+      toolLineActive = false;
     }
-  });
+  };
 
-  const askLine = () => new Promise((resolve) => {
-    rl.question(chalk.bold.green('\u276f '), resolve);
-  });
+  // 每次新任务开始时重置渲染状态
+  const resetRenderState = () => {
+    streamedText = '';
+    toolCount = 0;
+    toolLineActive = false;
+  };
 
-  while (true) {
-    let userInput;
-    try { userInput = await askLine(); } catch (_) { break; }
-
-    const trimmed = userInput.trim();
-
-    if (trimmed === '/') {
-      rl.pause();
-      const cmd = await showSlashMenu();
-      rl.resume();
-      if (!cmd) continue;
-      await handleCommand(cmd, '', agent, sm, sessionId, rl, watchdog, rewindStack);
-      continue;
-    }
-
-    if (trimmed.startsWith('/')) {
-      const spaceIdx = trimmed.indexOf(' ');
-      const base = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
-      const args = spaceIdx >= 0 ? trimmed.slice(spaceIdx + 1) : '';
-      await handleCommand(base, args, agent, sm, sessionId, rl, watchdog, rewindStack);
-      continue;
-    }
-
-    if (!trimmed) continue;
-
-    rewindStack.push(JSON.parse(JSON.stringify(agent.messages)));
-    if (rewindStack.length > 20) rewindStack.shift();
-
-    console.log('');
-    let streamedText = '';
-    let toolCount = 0;
-    let toolLineActive = false;
-
-    // isTTY 保护：在非终端环境（如 CMD 重定向、CI）下跳过光标操作
-    const isTTY = !!process.stdout.isTTY;
-    const clearToolLine = () => {
-      if (toolLineActive && isTTY) {
-        readline.clearLine(process.stdout, 0);
-        readline.cursorTo(process.stdout, 0);
-        toolLineActive = false;
-      } else {
-        toolLineActive = false;
-      }
-    };
-
-     process.stdout.write(chalk.bold.cyan(' ● ACE') + chalk.gray(' › '));
-
-    // 创建取消控制器，Ctrl+C 可中断当前任务
-    currentAbortController = new AbortController();
-
-    try {
-      await agent.chat(trimmed, {
-        signal: currentAbortController.signal,
-        onToken: (token) => {
-          clearToolLine();
-          if (streamedText === '') {
-            if (isTTY) {
-              readline.clearLine(process.stdout, 0);
-              readline.cursorTo(process.stdout, 0);
-            }
-            process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
-          }
-          streamedText += token;
-          process.stdout.write(token);
-        },
-        onToolStart: ({ name, args }) => {
-          toolCount++;
-          clearToolLine();
-          if (streamedText && !streamedText.endsWith('\n')) {
-            process.stdout.write('\n');
-            streamedText = '';
-          }
-          const d = TOOL_DISPLAY[name] || { label: name };
-          const hint = formatArgHint(name, args);
-          process.stdout.write(chalk.gray(` \u25b6 ${d.label}`) + hint);
-          toolLineActive = true;
-        },
-        onToolEnd: () => {
-          clearToolLine();
-          process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
-          streamedText = '';
-        }
-      });
-
+  agentWorker.on('message', (msg) => {
+    if (msg.type === 'token') {
       clearToolLine();
+      if (streamedText === '') {
+        if (isTTY) {
+          readline.clearLine(process.stdout, 0);
+          readline.cursorTo(process.stdout, 0);
+        }
+        process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
+      }
+      streamedText += msg.token;
+      process.stdout.write(msg.token);
+
+    } else if (msg.type === 'toolStart') {
+      toolCount++;
+      clearToolLine();
+      if (streamedText && !streamedText.endsWith('\n')) {
+        process.stdout.write('\n');
+        streamedText = '';
+      }
+      const d = TOOL_DISPLAY[msg.name] || { label: msg.name };
+      const hint = formatArgHint(msg.name, msg.args);
+      process.stdout.write(chalk.gray(` \u25b6 ${d.label}`) + hint);
+      toolLineActive = true;
+
+    } else if (msg.type === 'toolEnd') {
+      clearToolLine();
+      process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
+      streamedText = '';
+
+    } else if (msg.type === 'done') {
+      clearToolLine();
+      workerBusy = false;
+
+      // 同步消息历史和统计
+      if (msg.messages) sharedMessages = msg.messages;
+      if (msg.stats) sharedStats = msg.stats;
 
       if (streamedText) {
         if (isTTY) {
@@ -1011,47 +998,162 @@ async function main() {
 
       console.log('');
       if (toolCount > 0) {
-        const s = agent.stats;
+        const s = sharedStats;
         console.log(chalk.gray(` [${toolCount} \u6b21\u5de5\u5177\u8c03\u7528 \u00b7 \u7d2f\u8ba1\u8f93\u5165 ${s.inputTokens.toLocaleString()} tokens]`));
       }
       console.log('');
 
-      sm.save(sessionId, agent.messages, agent.stats);
+      sm.save(sessionId, sharedMessages, sharedStats);
+      // 恢复提示符
+      process.stdout.write(chalk.bold.green('\u276f '));
 
-    } catch (err) {
+    } else if (msg.type === 'aborted') {
       clearToolLine();
+      workerBusy = false;
       console.log('');
-      // 用户主动取消（Ctrl+C）
-      if (err.name === 'AbortError' || currentAbortController?.signal?.aborted) {
-        console.log(chalk.yellow(' 已取消当前任务。'));
-        console.log('');
-      } else {
-        const isAuthError = err.message?.includes('401') || err.message?.includes('Authentication') ||
-                            err.message?.includes('Unauthorized') || err.message?.includes('invalid') ||
-                            err.message?.includes('api key') || err.message?.includes('API key');
-        const isModelError = err.message?.includes('model') || err.message?.includes('400') ||
-                             err.message?.includes('API') || err.message?.includes('not found');
+      console.log(chalk.yellow(' 已取消当前任务。'));
+      console.log('');
+      process.stdout.write(chalk.bold.green('\u276f '));
 
-        console.log(chalk.red(` [错误] ${err.message}`));
+    } else if (msg.type === 'error') {
+      clearToolLine();
+      workerBusy = false;
+      console.log('');
 
-        if (isAuthError) {
-          const provider = findProvider(currentModel);
-          console.log(chalk.yellow('\n  API Key 无效或已过期。'));
-          if (provider) {
-            console.log(chalk.gray('  当前模型：') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
-            console.log(chalk.gray('  申请 / 查看 Key：') + chalk.bold.cyan(provider.apiUrl));
-          }
-          console.log(chalk.gray('  输入 /model ' + currentModel + ' 重新设置 Key'));
-        } else if (isModelError) {
-          console.log(chalk.gray(' 提示：请检查模型名称是否正确。当前模型：' + currentModel));
-          console.log(chalk.gray(' 输入 /model 查看可用模型列表'));
+      const errMsg = msg.message || '';
+      const isAuthError = errMsg.includes('401') || errMsg.includes('Authentication') ||
+                          errMsg.includes('Unauthorized') || errMsg.includes('invalid') ||
+                          errMsg.includes('api key') || errMsg.includes('API key');
+      const isModelError = errMsg.includes('model') || errMsg.includes('400') ||
+                           errMsg.includes('not found');
+
+      console.log(chalk.red(` [\u9519\u8bef] ${errMsg}`));
+
+      if (isAuthError) {
+        const provider = findProvider(currentModel);
+        console.log(chalk.yellow('\n  API Key \u65e0\u6548\u6216\u5df2\u8fc7\u671f\u3002'));
+        if (provider) {
+          console.log(chalk.gray('  \u5f53\u524d\u6a21\u578b\uff1a') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
+          console.log(chalk.gray('  \u7533\u8bf7 / \u67e5\u770b Key\uff1a') + chalk.bold.cyan(provider.apiUrl));
         }
-        console.log('');
+        console.log(chalk.gray('  \u8f93\u5165 /model ' + currentModel + ' \u91cd\u65b0\u8bbe\u7f6e Key'));
+      } else if (isModelError) {
+        console.log(chalk.gray(' \u63d0\u793a\uff1a\u8bf7\u68c0\u67e5\u6a21\u578b\u540d\u79f0\u662f\u5426\u6b63\u786e\u3002\u5f53\u524d\u6a21\u578b\uff1a' + currentModel));
+        console.log(chalk.gray(' \u8f93\u5165 /model \u67e5\u770b\u53ef\u7528\u6a21\u578b\u5217\u8868'));
       }
-    } finally {
-      // 任务结束（无论成功、失败还是取消），清除取消控制器
-      currentAbortController = null;
+      console.log('');
+      process.stdout.write(chalk.bold.green('\u276f '));
     }
+  });
+
+  agentWorker.on('error', (err) => {
+    workerBusy = false;
+    console.error(chalk.red('\n [Worker 错误] ' + err.message));
+    process.stdout.write(chalk.bold.green('\u276f '));
+  });
+
+  // ─── SIGINT 处理 ────────────────────────────────────────────────────────────
+  process.on('SIGINT', () => {
+    if (workerBusy) {
+      // Agent 正在运行：发送取消消息，不退出
+      agentWorker.postMessage({ type: 'cancel' });
+    } else {
+      // 空闲状态：退出程序
+      sm.save(sessionId, sharedMessages, sharedStats);
+      console.log('\n' + chalk.gray(' 再见！') + '\n');
+      watchdog.stop();
+      agentWorker.terminate();
+      process.exit(0);
+    }
+  });
+
+  // ─── 主输入循环（始终响应，不被 Agent 阻塞）────────────────────────────────
+  const askLine = () => new Promise((resolve) => {
+    rl.question('', resolve);
+  });
+
+  // 显示初始提示符
+  process.stdout.write(chalk.bold.green('\u276f '));
+
+  while (true) {
+    let userInput;
+    try { userInput = await askLine(); } catch (_) { break; }
+
+    const trimmed = userInput.trim();
+
+    if (trimmed === '/') {
+      rl.pause();
+      const cmd = await showSlashMenu();
+      rl.resume();
+      if (!cmd) {
+        process.stdout.write(chalk.bold.green('\u276f '));
+        continue;
+      }
+      await handleCommand(cmd, '', agent, sm, sessionId, rl, watchdog, rewindStack);
+      // 同步 Worker 的环境变量（/model 可能改变了 Key/URL）
+      agentWorker.postMessage({
+        type: 'syncEnv',
+        env: {
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+          OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+          OPENAI_MODEL: process.env.OPENAI_MODEL || currentModel
+        }
+      });
+      process.stdout.write(chalk.bold.green('\u276f '));
+      continue;
+    }
+
+    if (trimmed.startsWith('/')) {
+      const spaceIdx = trimmed.indexOf(' ');
+      const base = spaceIdx >= 0 ? trimmed.slice(0, spaceIdx) : trimmed;
+      const args = spaceIdx >= 0 ? trimmed.slice(spaceIdx + 1) : '';
+      await handleCommand(base, args, agent, sm, sessionId, rl, watchdog, rewindStack);
+      // 同步 Worker 的环境变量
+      agentWorker.postMessage({
+        type: 'syncEnv',
+        env: {
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+          OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+          OPENAI_MODEL: process.env.OPENAI_MODEL || currentModel
+        }
+      });
+      process.stdout.write(chalk.bold.green('\u276f '));
+      continue;
+    }
+
+    if (!trimmed) {
+      process.stdout.write(chalk.bold.green('\u276f '));
+      continue;
+    }
+
+    // 如果 Worker 正忙，提示用户
+    if (workerBusy) {
+      console.log(chalk.yellow(' ACE 正在执行任务，按 Ctrl+C 取消，或等待完成后继续。'));
+      process.stdout.write(chalk.bold.green('\u276f '));
+      continue;
+    }
+
+    rewindStack.push(JSON.parse(JSON.stringify(sharedMessages)));
+    if (rewindStack.length > 20) rewindStack.shift();
+
+    resetRenderState();
+    workerBusy = true;
+
+    console.log('');
+    process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
+
+    // 发送任务给 Worker Thread
+    agentWorker.postMessage({
+      type: 'chat',
+      message: trimmed,
+      messages: JSON.parse(JSON.stringify(sharedMessages)),
+      env: {
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
+        OPENAI_BASE_URL: process.env.OPENAI_BASE_URL || '',
+        OPENAI_MODEL: process.env.OPENAI_MODEL || currentModel
+      }
+    });
+    // 注意：不 await，主循环继续响应输入
   }
 }
 
