@@ -1,6 +1,8 @@
 /**
  * Agent.js — Core agent loop with tool orchestration
  * Author: OpenDemon
+ *
+ * v0.4.0: Added streaming support and tool-call callbacks for rich CLI experience.
  */
 import OpenAI from 'openai';
 import { FileReadTool } from '../tools/FileReadTool.js';
@@ -14,9 +16,12 @@ import { CriticalArchitectTool } from '../tools/CriticalArchitectTool.js';
 import { MemoryTool } from '../memory/CrossProjectMemory.js';
 import { CallGraphTool } from '../tools/CallGraphTool.js';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || undefined
+});
 
-const SYSTEM_PROMPT = `You are ACE-Coder, an advanced AI coding assistant powered by the Adaptive Context Engine (ACE).
+const SYSTEM_PROMPT = `You are Claude-ACE, an advanced AI coding assistant powered by the Adaptive Context Engine (ACE).
 
 ## Your Tools
 - **FileRead**: Read files. ACE automatically serves skeletons for large files (>200 lines). Use targetFunction="name" to get a specific function's full body. Use forceFull=true only when you truly need the entire file.
@@ -43,6 +48,20 @@ const SYSTEM_PROMPT = `You are ACE-Coder, an advanced AI coding assistant powere
 ## Key Principle
 You are not a typist. You are a technical co-founder. Think architecturally, act precisely.`;
 
+// Tool display names and icons for CLI
+const TOOL_DISPLAY = {
+  FileRead:        { icon: '📂', label: 'Reading file' },
+  FileWrite:       { icon: '✏️ ', label: 'Writing file' },
+  Bash:            { icon: '⚡', label: 'Running command' },
+  Grep:            { icon: '🔍', label: 'Searching' },
+  SemanticSearch:  { icon: '🧠', label: 'Semantic search' },
+  IntentVerify:    { icon: '🧪', label: 'Verifying intent' },
+  ExpandSymbol:    { icon: '🔬', label: 'Expanding symbol' },
+  CriticalArchitect: { icon: '🏛️ ', label: 'Architecture review' },
+  Memory:          { icon: '💾', label: 'Memory' },
+  CallGraph:       { icon: '🕸️ ', label: 'Call graph' },
+};
+
 export class Agent {
   constructor() {
     this.tools = [
@@ -68,43 +87,123 @@ export class Agent {
     }));
   }
 
-  async chat(userMessage) {
+  /**
+   * Stream a single LLM turn, collecting tool calls and streaming text tokens.
+   * @param {function} onToken - called with each text token chunk
+   * @param {function} onToolCall - called with { name, args } when a tool call starts
+   * @returns {{ toolCalls: Array, content: string, usage: object }}
+   */
+  async _streamTurn(onToken, onToolCall) {
+    const stream = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'glm-5',
+      messages: this.messages,
+      tools: this._toOpenAITools(),
+      tool_choice: 'auto',
+      temperature: 0.1,
+      stream: true
+    });
+
+    let content = '';
+    const toolCallMap = {}; // id -> { id, name, argumentsRaw }
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+
+      // Text token
+      if (delta.content) {
+        content += delta.content;
+        onToken(delta.content);
+      }
+
+      // Tool call chunks (streamed incrementally)
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index;
+          if (!toolCallMap[idx]) {
+            toolCallMap[idx] = { id: tc.id || '', name: '', argumentsRaw: '' };
+          }
+          if (tc.id) toolCallMap[idx].id = tc.id;
+          if (tc.function?.name) toolCallMap[idx].name += tc.function.name;
+          if (tc.function?.arguments) toolCallMap[idx].argumentsRaw += tc.function.arguments;
+        }
+      }
+    }
+
+    const toolCalls = Object.values(toolCallMap);
+
+    // Notify about tool calls
+    for (const tc of toolCalls) {
+      let args = {};
+      try { args = JSON.parse(tc.argumentsRaw); } catch (_) {}
+      onToolCall({ name: tc.name, args });
+    }
+
+    return { toolCalls, content };
+  }
+
+  /**
+   * Main chat method with streaming support.
+   * @param {string} userMessage
+   * @param {object} callbacks
+   * @param {function} callbacks.onToken - called with each streamed text token
+   * @param {function} callbacks.onToolStart - called with { name, args } when tool starts
+   * @param {function} callbacks.onToolEnd - called with { name, result } when tool finishes
+   */
+  async chat(userMessage, callbacks = {}) {
+    const onToken = callbacks.onToken || (() => {});
+    const onToolStart = callbacks.onToolStart || (() => {});
+    const onToolEnd = callbacks.onToolEnd || (() => {});
+
     this.messages.push({ role: 'user', content: userMessage });
-    
+
     for (let step = 0; step < 20; step++) {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
-        messages: this.messages,
-        tools: this._toOpenAITools(),
-        tool_choice: 'auto',
-        temperature: 0.1
-      });
+      let assistantContent = '';
+      const pendingToolCalls = [];
 
-      const msg = response.choices[0].message;
-      this.messages.push(msg);
+      const { toolCalls, content } = await this._streamTurn(
+        (token) => onToken(token),
+        (tc) => pendingToolCalls.push(tc)
+      );
 
-      if (response.usage) {
-        this.stats.inputTokens += response.usage.prompt_tokens;
-        this.stats.outputTokens += response.usage.completion_tokens;
+      assistantContent = content;
+
+      // Build assistant message for history
+      const assistantMsg = { role: 'assistant', content: assistantContent };
+      if (toolCalls.length > 0) {
+        assistantMsg.tool_calls = toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: tc.argumentsRaw }
+        }));
+      }
+      this.messages.push(assistantMsg);
+
+      // No tool calls → final answer
+      if (toolCalls.length === 0) {
+        return { answer: assistantContent, stats: this.stats };
       }
 
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return { answer: msg.content, stats: this.stats };
-      }
-
-      for (const tc of msg.tool_calls) {
+      // Execute tools
+      for (const tc of toolCalls) {
         this.stats.toolCalls++;
-        const args = JSON.parse(tc.function.arguments);
-        const tool = this.tools.find(t => t.name === tc.function.name);
+        let args = {};
+        try { args = JSON.parse(tc.argumentsRaw); } catch (_) {}
+
+        onToolStart({ name: tc.name, args });
+
+        const tool = this.tools.find(t => t.name === tc.name);
         const result = tool
           ? await tool.execute(args)
-          : `[Error] Tool "${tc.function.name}" not found`;
+          : `[Error] Tool "${tc.name}" not found`;
+
+        onToolEnd({ name: tc.name, result });
 
         this.messages.push({
           role: 'tool',
           tool_call_id: tc.id,
-          name: tc.function.name,
-          content: result
+          name: tc.name,
+          content: typeof result === 'string' ? result : JSON.stringify(result)
         });
       }
     }
@@ -114,5 +213,9 @@ export class Agent {
 
   resetStats() {
     this.stats = { inputTokens: 0, outputTokens: 0, toolCalls: 0 };
+  }
+
+  getToolDisplay(toolName) {
+    return TOOL_DISPLAY[toolName] || { icon: '🔧', label: toolName };
   }
 }
