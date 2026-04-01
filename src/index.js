@@ -808,10 +808,14 @@ async function main() {
     let toolCount = 0;
     let toolLineActive = false;
 
+    // isTTY 保护：在非终端环境（如 CMD 重定向、CI）下跳过光标操作
+    const isTTY = !!process.stdout.isTTY;
     const clearToolLine = () => {
-      if (toolLineActive) {
+      if (toolLineActive && isTTY) {
         readline.clearLine(process.stdout, 0);
         readline.cursorTo(process.stdout, 0);
+        toolLineActive = false;
+      } else {
         toolLineActive = false;
       }
     };
@@ -823,8 +827,10 @@ async function main() {
         onToken: (token) => {
           clearToolLine();
           if (streamedText === '') {
-            readline.clearLine(process.stdout, 0);
-            readline.cursorTo(process.stdout, 0);
+            if (isTTY) {
+              readline.clearLine(process.stdout, 0);
+              readline.cursorTo(process.stdout, 0);
+            }
             process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
           }
           streamedText += token;
@@ -852,12 +858,14 @@ async function main() {
       clearToolLine();
 
       if (streamedText) {
-        const rawLines = streamedText.split('\n').length;
-        for (let i = 0; i < rawLines; i++) {
-          readline.clearLine(process.stdout, 0);
-          if (i < rawLines - 1) readline.moveCursor(process.stdout, 0, -1);
+        if (isTTY) {
+          const rawLines = streamedText.split('\n').length;
+          for (let i = 0; i < rawLines; i++) {
+            readline.clearLine(process.stdout, 0);
+            if (i < rawLines - 1) readline.moveCursor(process.stdout, 0, -1);
+          }
+          readline.cursorTo(process.stdout, 0);
         }
-        readline.cursorTo(process.stdout, 0);
         const rendered = renderMarkdown(streamedText);
         const indented = rendered.split('\n').map(l => ' ' + l).join('\n');
         process.stdout.write(chalk.bold.cyan('\u25cf ACE') + chalk.gray(' \u203a ') + indented);

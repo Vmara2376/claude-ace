@@ -11,7 +11,13 @@
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { IntentVerificationTool } from '../tools/IntentVerificationTool.js';
+
+// Windows 兼容：npm 在 Windows 上是 npm.cmd
+const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// Windows 兼容：eslint 在 Windows 上是 eslint.cmd
+const ESLINT_EXT = process.platform === 'win32' ? '.cmd' : '';
 
 export class WatchdogAgent {
   constructor(projectRoot, options = {}) {
@@ -83,11 +89,12 @@ export class WatchdogAgent {
 
       if (isRealScript) {
         this.log(`Running: npm test (script: "${testScript}")`, { silent: true });
-        const result = spawnSync('npm', ['test'], {
+        const result = spawnSync(NPM_CMD, ['test'], {
           cwd: this.projectRoot,
           encoding: 'utf-8',
           timeout: 120000,
-          env: { ...process.env }
+          env: { ...process.env },
+          shell: process.platform === 'win32',  // Windows 需要 shell:true
         });
 
         if (result.status !== 0) {
@@ -128,13 +135,18 @@ export class WatchdogAgent {
    * Falls back to .broken-lint.json simulation if eslint is not installed.
    */
   async checkLinting() {
-    const eslintBin = path.join(this.projectRoot, 'node_modules', '.bin', 'eslint');
-    if (fs.existsSync(eslintBin)) {
+    const eslintBin = path.join(this.projectRoot, 'node_modules', '.bin', 'eslint' + ESLINT_EXT);
+    // Windows 备用：尝试不带扩展名的路径
+    const eslintBinFallback = path.join(this.projectRoot, 'node_modules', '.bin', 'eslint');
+    const eslintExists = fs.existsSync(eslintBin) || fs.existsSync(eslintBinFallback);
+    const eslintCmd = fs.existsSync(eslintBin) ? eslintBin : eslintBinFallback;
+    if (eslintExists) {
       this.log('Running: eslint src/', { silent: true });
-      const result = spawnSync(eslintBin, ['src/', '--format', 'json', '--max-warnings', '0'], {
+      const result = spawnSync(eslintCmd, ['src/', '--format', 'json', '--max-warnings', '0'], {
         cwd: this.projectRoot,
         encoding: 'utf-8',
-        timeout: 30000
+        timeout: 30000,
+        shell: process.platform === 'win32',  // Windows 需要 shell:true
       });
 
       if (result.status !== 0 && result.stdout) {

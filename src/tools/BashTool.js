@@ -24,7 +24,14 @@ export class BashTool {
       if (command.includes(blocked)) return `[Bash Error] Command blocked for safety: "${blocked}"`;
     }
     try {
-      const output = execSync(command, { timeout, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      // Windows 兼容：在 Windows 上使用 cmd.exe 执行命令
+      const opts = {
+        timeout,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+      };
+      const output = execSync(command, opts);
       return output || '[Bash] Command completed with no output';
     } catch (e) {
       return `[Bash Error] Exit code ${e.status}:\n${e.stderr || e.message}`;
