@@ -13,9 +13,24 @@
  * 4. Anti-patterns
  * 
  * It returns a structured critique and alternative proposals.
+ *
+ * Security fix: Use dynamic OpenAI client creation to respect user's current
+ * model and API key configuration instead of hardcoding gpt-4.1-mini.
  */
 
 import OpenAI from 'openai';
+
+// 动态创建客户端，始终读取最新的环境变量
+function createClient() {
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: process.env.OPENAI_BASE_URL || undefined
+  });
+}
+
+function getModel() {
+  return process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+}
 
 export class CriticalArchitectTool {
   get name() { return 'CriticalArchitect'; }
@@ -34,7 +49,7 @@ export class CriticalArchitectTool {
   }
 
   async execute({ proposal, context = '' }) {
-    const openai = new OpenAI();
+    const openai = createClient();
     
     const systemPrompt = `You are a Principal Software Architect known for your rigorous critical thinking.
 Your job is NOT to write code, but to CRITIQUE proposed architectures and feature requests.
@@ -61,7 +76,7 @@ Format your response exactly like this:
 
     try {
       const response = await openai.chat.completions.create({
-        model: 'gpt-4.1-mini',
+        model: getModel(),
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Context:\n${context}\n\nProposal to critique:\n${proposal}` }

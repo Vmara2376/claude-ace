@@ -27,6 +27,8 @@ export class WatchdogAgent {
     this.timer = null;
     this.ivt = new IntentVerificationTool();
     this.logFile = path.join(projectRoot, '.ace-watchdog.log');
+    // 防重叠标志位：当上一次扫描还未结束时，跳过本次扫描
+    this._scanning = false;
   }
 
   log(message, { silent = false } = {}) {
@@ -55,23 +57,32 @@ export class WatchdogAgent {
   }
 
   async scanAndHeal() {
+    // 防重叠：如果上一次扫描还在运行，跳过本次
+    if (this._scanning) {
+      this.log('Previous scan still in progress, skipping this interval.', { silent: true });
+      return;
+    }
+    this._scanning = true;
     this.log('Initiating codebase health scan...', { silent: true });
+    try {
+      const testIssues = await this.checkTests();
+      if (testIssues) {
+        this.log(`Detected test failures. Initiating self-healing...`);
+        await this.heal(testIssues);
+        return;
+      }
 
-    const testIssues = await this.checkTests();
-    if (testIssues) {
-      this.log(`Detected test failures. Initiating self-healing...`);
-      await this.heal(testIssues);
-      return;
+      const lintIssues = await this.checkLinting();
+      if (lintIssues) {
+        this.log(`Detected linting issues. Initiating self-healing...`);
+        await this.heal(lintIssues);
+        return;
+      }
+
+      this.log('Scan complete. Codebase is healthy.', { silent: true });
+    } finally {
+      this._scanning = false;
     }
-
-    const lintIssues = await this.checkLinting();
-    if (lintIssues) {
-      this.log(`Detected linting issues. Initiating self-healing...`);
-      await this.heal(lintIssues);
-      return;
-    }
-
-    this.log('Scan complete. Codebase is healthy.', { silent: true });
   }
 
   /**

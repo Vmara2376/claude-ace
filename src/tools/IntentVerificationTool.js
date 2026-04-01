@@ -19,7 +19,18 @@ import fs from 'fs';
 import path from 'path';
 import { CrossProjectMemory } from '../memory/CrossProjectMemory.js';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// 动态创建 OpenAI 客户端，始终读取最新的环境变量（用户通过 /model 切换后立即生效）
+function createClient() {
+  return new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: process.env.OPENAI_BASE_URL || undefined
+  });
+}
+
+// 使用用户当前配置的模型；如果当前模型不支持 tool_calling，回退到 gpt-4.1-mini
+function getModel() {
+  return process.env.OPENAI_MODEL || 'gpt-4.1-mini';
+}
 
 export class IntentVerificationTool {
   get name() { return 'IntentVerify'; }
@@ -138,8 +149,9 @@ export class IntentVerificationTool {
 
   async _generateTest(intent, targetFile, source, framework) {
     const fileName = path.basename(targetFile);
+    const openai = createClient();
     const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
+      model: getModel(),
       messages: [
         { role: 'system', content: 'You are a test engineer. Generate a minimal but complete Node.js test using built-in assert module. The test should DEFINE what "correct" means for the given intent. Import the target module using dynamic import(). Return ONLY the test code, no explanation.' },
         { role: 'user', content: `File: ${fileName}\nIntent: ${intent}\n\nSource (first 100 lines):\n${source.split('\n').slice(0, 100).join('\n')}\n\nGenerate a test file that verifies this intent is correctly implemented.` }
@@ -153,8 +165,9 @@ export class IntentVerificationTool {
   }
 
   async _generateImplementation(intent, targetFile, source) {
+    const openai = createClient();
     const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
+      model: getModel(),
       messages: [
         { role: 'system', content: 'You are a senior software engineer. Implement the requested change to the source code. Return ONLY the complete modified source code, no explanation, no markdown.' },
         { role: 'user', content: `File: ${targetFile}\nIntent: ${intent}\n\nCurrent source:\n${source}\n\nReturn the complete modified file.` }
@@ -167,8 +180,9 @@ export class IntentVerificationTool {
   }
 
   async _selfHeal(intent, targetFile, currentSource, testCode, errorOutput) {
+    const openai = createClient();
     const response = await openai.chat.completions.create({
-      model: 'gpt-4.1-mini',
+      model: getModel(),
       messages: [
         { role: 'system', content: 'You are a senior software engineer debugging a failing test. Fix the implementation to make the test pass. Return ONLY the complete corrected source code.' },
         { role: 'user', content: `Intent: ${intent}\n\nTest code:\n${testCode}\n\nTest error:\n${errorOutput.substring(0, 1000)}\n\nCurrent implementation:\n${currentSource}\n\nFix the implementation to make the test pass.` }
