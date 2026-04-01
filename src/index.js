@@ -889,11 +889,20 @@ async function main() {
   let sessionId = sm.create(process.cwd());
   let rewindStack = [];
 
+  // 当前正在运行的 Agent 任务的 AbortController
+  let currentAbortController = null;
+
   process.on('SIGINT', () => {
-    sm.save(sessionId, agent.messages, agent.stats);
-    console.log('\n' + chalk.gray(' 再见！') + '\n');
-    watchdog.stop();
-    process.exit(0);
+    if (currentAbortController) {
+      // Agent 正在运行：Ctrl+C 取消当前任务，不退出
+      currentAbortController.abort();
+    } else {
+      // 空闲状态：Ctrl+C 退出程序
+      sm.save(sessionId, agent.messages, agent.stats);
+      console.log('\n' + chalk.gray(' 再见！') + '\n');
+      watchdog.stop();
+      process.exit(0);
+    }
   });
 
   const askLine = () => new Promise((resolve) => {
@@ -945,10 +954,14 @@ async function main() {
       }
     };
 
-    process.stdout.write(chalk.bold.cyan(' \u25cf ACE') + chalk.gray(' \u203a '));
+     process.stdout.write(chalk.bold.cyan(' ● ACE') + chalk.gray(' › '));
+
+    // 创建取消控制器，Ctrl+C 可中断当前任务
+    currentAbortController = new AbortController();
 
     try {
       await agent.chat(trimmed, {
+        signal: currentAbortController.signal,
         onToken: (token) => {
           clearToolLine();
           if (streamedText === '') {
@@ -1008,27 +1021,36 @@ async function main() {
     } catch (err) {
       clearToolLine();
       console.log('');
-      const isAuthError = err.message.includes('401') || err.message.includes('Authentication') ||
-                          err.message.includes('Unauthorized') || err.message.includes('invalid') ||
-                          err.message.includes('api key') || err.message.includes('API key');
-      const isModelError = err.message.includes('model') || err.message.includes('400') ||
-                           err.message.includes('API') || err.message.includes('not found');
+      // 用户主动取消（Ctrl+C）
+      if (err.name === 'AbortError' || currentAbortController?.signal?.aborted) {
+        console.log(chalk.yellow(' 已取消当前任务。'));
+        console.log('');
+      } else {
+        const isAuthError = err.message?.includes('401') || err.message?.includes('Authentication') ||
+                            err.message?.includes('Unauthorized') || err.message?.includes('invalid') ||
+                            err.message?.includes('api key') || err.message?.includes('API key');
+        const isModelError = err.message?.includes('model') || err.message?.includes('400') ||
+                             err.message?.includes('API') || err.message?.includes('not found');
 
-      console.log(chalk.red(` [错误] ${err.message}`));
+        console.log(chalk.red(` [错误] ${err.message}`));
 
-      if (isAuthError) {
-        const provider = findProvider(currentModel);
-        console.log(chalk.yellow('\n  API Key 无效或已过期。'));
-        if (provider) {
-          console.log(chalk.gray('  当前模型：') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
-          console.log(chalk.gray('  申请 / 查看 Key：') + chalk.bold.cyan(provider.apiUrl));
+        if (isAuthError) {
+          const provider = findProvider(currentModel);
+          console.log(chalk.yellow('\n  API Key 无效或已过期。'));
+          if (provider) {
+            console.log(chalk.gray('  当前模型：') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
+            console.log(chalk.gray('  申请 / 查看 Key：') + chalk.bold.cyan(provider.apiUrl));
+          }
+          console.log(chalk.gray('  输入 /model ' + currentModel + ' 重新设置 Key'));
+        } else if (isModelError) {
+          console.log(chalk.gray(' 提示：请检查模型名称是否正确。当前模型：' + currentModel));
+          console.log(chalk.gray(' 输入 /model 查看可用模型列表'));
         }
-        console.log(chalk.gray('  输入 /model ' + currentModel + ' 重新设置 Key'));
-      } else if (isModelError) {
-        console.log(chalk.gray(' 提示：请检查模型名称是否正确。当前模型：' + currentModel));
-        console.log(chalk.gray(' 输入 /model 查看可用模型列表'));
+        console.log('');
       }
-      console.log('');
+    } finally {
+      // 任务结束（无论成功、失败还是取消），清除取消控制器
+      currentAbortController = null;
     }
   }
 }

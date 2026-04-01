@@ -184,15 +184,31 @@ export class Agent {
    * @param {function} callbacks.onToken - called with each streamed text token
    * @param {function} callbacks.onToolStart - called with { name, args } when tool starts
    * @param {function} callbacks.onToolEnd - called with { name, result } when tool finishes
+   * @param {AbortSignal} [callbacks.signal] - optional AbortSignal to cancel the chat
    */
   async chat(userMessage, callbacks = {}) {
     const onToken = callbacks.onToken || (() => {});
     const onToolStart = callbacks.onToolStart || (() => {});
     const onToolEnd = callbacks.onToolEnd || (() => {});
+    const signal = callbacks.signal || null;
+
+    // 工具调用超时：60 秒（防止工具卡死整个 Agent）
+    const TOOL_TIMEOUT_MS = 60_000;
+    const withTimeout = (promise, ms, label) => {
+      const timer = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`[Timeout] ${label} 超时 ${ms / 1000}s`)), ms)
+      );
+      return Promise.race([promise, timer]);
+    };
 
     this.messages.push({ role: 'user', content: userMessage });
 
     for (let step = 0; step < 20; step++) {
+      // 检查是否已被取消
+      if (signal?.aborted) {
+        return { answer: '[Agent] 已取消', stats: this.stats, aborted: true };
+      }
+
       let assistantContent = '';
       const pendingToolCalls = [];
 
@@ -221,6 +237,11 @@ export class Agent {
 
       // Execute tools
       for (const tc of toolCalls) {
+        // 检查是否已被取消
+        if (signal?.aborted) {
+          return { answer: '[Agent] 已取消', stats: this.stats, aborted: true };
+        }
+
         this.stats.toolCalls++;
         let args = {};
         try { args = JSON.parse(tc.argumentsRaw); } catch (_) {}
@@ -228,9 +249,14 @@ export class Agent {
         onToolStart({ name: tc.name, args });
 
         const tool = this.tools.find(t => t.name === tc.name);
-        const result = tool
-          ? await tool.execute(args)
-          : `[Error] Tool "${tc.name}" not found`;
+        let result;
+        try {
+          result = tool
+            ? await withTimeout(tool.execute(args), TOOL_TIMEOUT_MS, tc.name)
+            : `[Error] Tool "${tc.name}" not found`;
+        } catch (err) {
+          result = `[Error] ${err.message}`;
+        }
 
         onToolEnd({ name: tc.name, result });
 
@@ -243,7 +269,7 @@ export class Agent {
       }
     }
 
-    return { answer: '[Agent] Max steps reached', stats: this.stats };
+    return { answer: '[Agent] 已达到最大执行步数（20步），请简化任务或分步执行。', stats: this.stats };
   }
 
   resetStats() {
