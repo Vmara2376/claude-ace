@@ -41,8 +41,8 @@ Claude-ACE (Adaptive Context Engine) 是一个从第一性原理出发构建的 
 | **OpenAI** | [申请 API Key](https://platform.openai.com/) | `https://api.openai.com/v1` | `gpt-4o-mini` / `gpt-4o` |
 
 **✨ 首次启动配置向导**
-Claude-ACE v0.8.2 引入了交互式配置向导。首次启动时，系统会引导你一次性填写所有想使用的提供商的 API Key。
-Key 会被安全地持久化保存到 `~/.ace-keys.json` 中。
+Claude-ACE v0.8.4 引入了交互式配置向导。首次启动时，系统会引导你一次性填写所有想使用的提供商的 API Key。
+Key 会被安全地持久化保存到 `~/.ace-keys.json` 中，重启后自动加载，无需重复配置。
 
 **🔄 无缝切换模型**
 配置完成后，在运行中随时输入 `/model <模型名称>`（例如 `/model deepseek-chat`），系统会自动加载对应提供商的 Key 和 Base URL，**立即生效，无需重启**。
@@ -75,14 +75,15 @@ Key 会被安全地持久化保存到 `~/.ace-keys.json` 中。
 git clone https://github.com/OpenDemon/claude-ace.git
 cd claude-ace
 
-# 2. 安装依赖
+# 2. 安装依赖并注册全局命令
 npm install
+npm link
 
-# 3. 启动 Claude-ACE
-npm start
+# 3. 启动 Claude-ACE（之后在任意目录均可直接运行）
+ace
 ```
 
-*注：首次启动会自动弹出配置向导，引导你填写 API Key。你也可以随时通过设置环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL` 来覆盖默认配置。*
+*注：首次启动会自动弹出配置向导，引导你填写 API Key。启动时会自动检测 Key 的连通性，如果失效会立即提示更新。你也可以随时通过设置环境变量 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_MODEL` 来覆盖默认配置。*
 
 ### 丰富的斜杠命令菜单
 
@@ -118,13 +119,14 @@ Claude-ACE 的核心架构分为三层，共 10 个核心工具：
 
 ## 📝 版本历史
 
-### v0.8.2（当前版本）
-- **首次启动配置向导**：自动引导填写各提供商 API Key，持久化保存至 `~/.ace-keys.json`。
+### v0.8.4（当前版本）
+- **全局 `ace` 命令**：支持通过 `npm link` 注册全局命令，在任意目录直接输入 `ace` 即可启动。
+- **启动时静默连通性检测**：启动时自动检测已保存 Key 的有效性，遇到 401/402 错误立即引导用户更新，避免等到第一次对话才报错。
+- **Worker Thread 架构**：Agent 移至独立线程运行，主线程始终保持响应。支持在 Agent 执行任务期间输入新指令（如按 `Ctrl+C` 取消当前任务）。
+- **首次启动配置向导**：自动引导填写各提供商 API Key，持久化保存至 `~/.ace-keys.json`，重启自动加载。
 - **无缝模型切换**：`/model` 命令切换模型时自动加载对应提供商的 Key，彻底解决 Key 混用导致的 401 错误。
 - **新增 `/setup` 命令**：随时重新配置任意提供商的 API Key。
 - **全面扩展国产模型支持**：内置通义千问、DeepSeek、MiniMax、Kimi 等主流国产模型配置。
-- **智能环境诊断**：`/doctor` 命令自动识别当前模型提供商，并提供针对性的配置检查与修复建议。
-- **动态费用估算**：`/cost` 命令支持所有新接入模型的价格计算。
 
 ### v0.7.0
 - **完整 CLI 体验**：补全 19 个斜杠命令（`/status`, `/skills`, `/resume`, `/memory`, `/watchdog`, `/callgraph`, `/model`, `/compact`, `/export`, `/init`, `/doctor`, `/cost` 等）。
