@@ -61,9 +61,11 @@ export class IntentVerificationTool {
     let newSource = await this._generateImplementation(intent, targetFile, originalSource);
     fs.writeFileSync(targetFile, newSource);
 
-    // Step 4: Self-healing loop
+    // Step 4: Self-healing loop with Fallback Strategy
     let passed = false;
     let lastError = '';
+    let fallbackTriggered = false;
+    
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       addLog(`[IntentVerify] Step 3/4: Running tests (attempt ${attempt}/${maxRetries})...`);
       const { success, output } = this._runTest(testFile, testFramework);
@@ -77,7 +79,16 @@ export class IntentVerificationTool {
       addLog(`[IntentVerify] Error: ${output.substring(0, 200)}`);
 
       if (attempt < maxRetries) {
-        newSource = await this._selfHeal(intent, targetFile, newSource, testCode, output);
+        // Fallback Strategy: If tests fail on the first attempt, it might be due to missing context (skeleton mode).
+        // We explicitly tell the self-healing LLM to consider the full original source if it hasn't already.
+        let healingSourceContext = newSource;
+        if (attempt === 1 && !fallbackTriggered) {
+          addLog(`[IntentVerify] Triggering Context Fallback: Providing full original source to self-healing agent to prevent hallucination.`);
+          fallbackTriggered = true;
+          healingSourceContext = `// ORIGINAL FULL SOURCE BEFORE CHANGES:\n${originalSource}\n\n// CURRENT FAILING IMPLEMENTATION:\n${newSource}`;
+        }
+        
+        newSource = await this._selfHeal(intent, targetFile, healingSourceContext, testCode, output);
         fs.writeFileSync(targetFile, newSource);
       }
     }

@@ -9,6 +9,7 @@ import { BashTool } from '../tools/BashTool.js';
 import { GrepTool } from '../tools/GrepTool.js';
 import { SemanticSearchTool } from '../tools/SemanticSearchTool.js';
 import { IntentVerificationTool } from '../tools/IntentVerificationTool.js';
+import { ExpandSymbolTool } from '../tools/ExpandSymbolTool.js';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -21,10 +22,11 @@ const SYSTEM_PROMPT = `You are ACE-Coder, an advanced AI coding assistant powere
 - **Grep**: Search file contents with regex.
 - **SemanticSearch**: Find functions/classes/interfaces by name using AST parsing. Use this BEFORE Grep for symbol lookup — it's 10x more token-efficient.
 - **IntentVerify**: Implement a code change with automatic test generation and self-healing verification. Use this for any non-trivial modification.
+- **ExpandSymbol**: Expand the full implementation of a specific function/class when you only have the skeleton view. MUST use this before reusing an existing function to avoid hallucinating its return structure.
 
 ## ACE Workflow
 1. When exploring a codebase, use SemanticSearch first to locate symbols.
-2. When reading large files, trust the skeleton — use targetFunction to drill into specifics.
+2. When reading large files, trust the skeleton. If you need to understand or reuse a specific function, MUST use ExpandSymbol to read its full body first.
 3. When making code changes, prefer IntentVerify over direct FileWrite for non-trivial changes.
 4. Be concise in your responses — the user cares about results, not process narration.
 
@@ -39,7 +41,8 @@ export class Agent {
       new BashTool(),
       new GrepTool(),
       new SemanticSearchTool(),
-      new IntentVerificationTool()
+      new IntentVerificationTool(),
+      new ExpandSymbolTool()
     ];
     this.messages = [{ role: 'system', content: SYSTEM_PROMPT }];
     this.stats = { inputTokens: 0, outputTokens: 0, toolCalls: 0 };

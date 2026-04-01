@@ -47,18 +47,31 @@ export class CrossProjectMemory {
 
   /**
    * Store a lesson learned (e.g., a bug that was hard to fix)
+   * Includes Quality Gating inspired by oh-my-claudecode Learner Skill
    */
-  learnLesson(tags, description, solution) {
+  learnLesson(tags, description, solution, qualityGate = {}) {
+    // Quality Gate: 3 Questions
+    // 1. Can this be easily Googled? (Should be NO)
+    // 2. Is this specific to this codebase/architecture? (Should be YES)
+    // 3. Was this discovered through actual debugging/trial-and-error? (Should be YES)
+    
+    const { isGooglable = false, isCodebaseSpecific = true, isFromDebugging = true } = qualityGate;
+    
+    if (isGooglable && !isCodebaseSpecific) {
+      return `[Memory Rejected] Quality Gate Failed: This lesson appears to be generic knowledge that can be easily Googled. We only store codebase-specific insights or hard-won debugging lessons to keep the memory high-signal.`;
+    }
+
     const db = this.getDB();
     db.lessons.push({
       id: Date.now().toString(),
       tags,
       description,
       solution,
+      qualityMetrics: { isGooglable, isCodebaseSpecific, isFromDebugging },
       timestamp: new Date().toISOString()
     });
     this.saveDB(db);
-    return `Lesson learned and stored under tags: ${tags.join(', ')}`;
+    return `Lesson learned and stored under tags: ${tags.join(', ')}. (Quality Gate Passed)`;
   }
 
   /**
@@ -113,6 +126,9 @@ export class MemoryTool {
         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for learn/recall' },
         description: { type: 'string', description: 'Problem description (for learn)' },
         solution: { type: 'string', description: 'Solution found (for learn)' },
+        isGooglable: { type: 'boolean', description: 'Quality Gate: Can this solution be easily found on Google/StackOverflow? (Should be false for high-quality lessons)' },
+        isCodebaseSpecific: { type: 'boolean', description: 'Quality Gate: Is this specific to the current codebase architecture or quirks? (Should be true)' },
+        isFromDebugging: { type: 'boolean', description: 'Quality Gate: Was this discovered through actual debugging and trial-and-error? (Should be true)' },
         key: { type: 'string', description: 'Preference key' },
         value: { type: 'string', description: 'Preference value' }
       },
@@ -123,7 +139,16 @@ export class MemoryTool {
   async execute(params) {
     switch (params.action) {
       case 'learn':
-        return this.memory.learnLesson(params.tags || [], params.description, params.solution);
+        return this.memory.learnLesson(
+          params.tags || [], 
+          params.description, 
+          params.solution,
+          {
+            isGooglable: params.isGooglable,
+            isCodebaseSpecific: params.isCodebaseSpecific,
+            isFromDebugging: params.isFromDebugging
+          }
+        );
       case 'recall':
         const results = this.memory.recall(params.tags || []);
         if (results.length === 0) return 'No relevant memories found.';
