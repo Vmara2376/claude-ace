@@ -1068,8 +1068,30 @@ async function main() {
   });
 
   // ─── 主输入循环（始终响应，不被 Agent 阻塞）────────────────────────────────
+  // 用事件驱动替代 rl.question，避免 readline 占用 stdout 导致 Worker 输出被干扰
+  const lineQueue = [];
+  let lineResolve = null;
+
+  rl.on('line', (line) => {
+    if (lineResolve) {
+      const res = lineResolve;
+      lineResolve = null;
+      res(line);
+    } else {
+      lineQueue.push(line);
+    }
+  });
+
+  rl.on('close', () => {
+    if (lineResolve) lineResolve(null);
+  });
+
   const askLine = () => new Promise((resolve) => {
-    rl.question('', resolve);
+    if (lineQueue.length > 0) {
+      resolve(lineQueue.shift());
+    } else {
+      lineResolve = resolve;
+    }
   });
 
   // 显示初始提示符
@@ -1078,6 +1100,7 @@ async function main() {
   while (true) {
     let userInput;
     try { userInput = await askLine(); } catch (_) { break; }
+    if (userInput === null) break; // rl 已关闭
 
     const trimmed = userInput.trim();
 
