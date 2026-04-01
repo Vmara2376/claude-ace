@@ -35,8 +35,33 @@ import { execSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const VERSION = '0.8.0';
+const VERSION = '0.8.1';
 let currentModel = process.env.OPENAI_MODEL || 'glm-5-turbo';
+
+// 按提供商分别存储 API Key 的配置文件（~/.ace-keys.json）
+const ACE_KEYS_FILE = path.join(os.homedir(), '.ace-keys.json');
+
+function loadProviderKeys() {
+  try {
+    if (fs.existsSync(ACE_KEYS_FILE)) {
+      return JSON.parse(fs.readFileSync(ACE_KEYS_FILE, 'utf-8'));
+    }
+  } catch (_) {}
+  return {};
+}
+
+function saveProviderKey(providerName, apiKey) {
+  const keys = loadProviderKeys();
+  keys[providerName] = apiKey;
+  try {
+    fs.writeFileSync(ACE_KEYS_FILE, JSON.stringify(keys, null, 2) + '\n', { mode: 0o600 });
+  } catch (_) {}
+}
+
+function getProviderKey(providerName) {
+  const keys = loadProviderKeys();
+  return keys[providerName] || '';
+}
 
 const RELEASE_NOTES = `
 ## v0.8.0
@@ -224,6 +249,7 @@ const SLASH_COMMANDS = [
   { name: '/status            \u663e\u793a\u7248\u672c\u3001\u6a21\u578b\u3001API \u8fde\u901a\u6027',   value: '/status' },
   { name: '/doctor            \u68c0\u67e5\u73af\u5883\u914d\u7f6e\u662f\u5426\u6b63\u786e',         value: '/doctor' },
   { name: '/model [name]      \u67e5\u770b\u6216\u5207\u6362\u6a21\u578b',              value: '/model' },
+  { name: '/setup             重新配置所有提供商的 API Key',    value: '/setup' },
   { name: '/skills            \u5217\u51fa\u6240\u6709 ACE \u5de5\u5177\u80fd\u529b',         value: '/skills' },
   { name: '/memory            \u67e5\u770b\u8de8\u9879\u76ee\u8bb0\u5fc6\u5e93',             value: '/memory' },
   { name: '/watchdog          \u67e5\u770b/\u63a7\u5236\u5b88\u62a4\u8fdb\u7a0b',            value: '/watchdog' },
@@ -664,42 +690,18 @@ async function handleModel(args, rl) {
   // 设置 Base URL
   process.env.OPENAI_BASE_URL = provider.envBase;
   console.log(chalk.gray('  Base URL 已自动设置：') + chalk.cyan(provider.envBase));
-  console.log('');
 
-  // 用原生 readline.question 进行交互，避免 @inquirer/prompts 与主 rl 共用 stdin 冲突
-  const rlAsk = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
-
-  const currentKey = process.env.OPENAI_API_KEY || '';
-  let shouldSetKey = !currentKey;
-
-  if (currentKey) {
-    // 已有 Key，问是否更换
-    process.stdout.write(chalk.gray('  当前已有 API Key，是否为 ' + provider.name + ' 输入新的 Key？') + chalk.cyan(' [y/N] '));
-    const ans = await rlAsk('');
-    shouldSetKey = ans.trim().toLowerCase() === 'y';
-  }
-
-  if (shouldSetKey) {
-    console.log('');
-    console.log(chalk.bold.white('  请先到以下地址申请 / 查看 API Key：'));
-    console.log('  ' + chalk.bold.cyan('➡  ' + provider.apiUrl));
-    console.log('');
-
-    let trimmedKey = '';
-    while (trimmedKey.length < 8) {
-      process.stdout.write(chalk.gray('  粘贴 API Key：'));
-      const raw = await rlAsk('');
-      trimmedKey = raw.trim();
-      if (trimmedKey.length < 8) {
-        console.log(chalk.yellow('  Key 过短，请重新输入。'));
-      }
-    }
-
-    process.env.OPENAI_API_KEY = trimmedKey;
-    console.log(chalk.green('  ✓ API Key 已设置，当前会话立即生效。'));
-    console.log(chalk.gray('  提示：重启后需重新设置。建议写入系统环境变量。'));
+  // 直接加载该提供商已保存的 Key
+  const savedKey = getProviderKey(provider.name);
+  if (savedKey) {
+    process.env.OPENAI_API_KEY = savedKey;
+    const masked = savedKey.slice(0, 6) + '****' + savedKey.slice(-4);
+    console.log(chalk.green('  ✓ 已加载 ' + provider.name + ' 的 Key：') + chalk.gray(masked));
   } else {
-    console.log(chalk.gray('  保留当前 Key。如果出现 401 错误，输入 /model ' + newModel + ' 重新设置。'));
+    // 该提供商还没配置过 Key
+    console.log(chalk.yellow('  该提供商尚未配置 Key。'));
+    console.log(chalk.gray('  申请地址：') + chalk.cyan(provider.apiUrl));
+    console.log(chalk.gray('  运行 /setup 重新配置，或设置环境变量 OPENAI_API_KEY。'));
   }
   console.log('');
 }
@@ -780,7 +782,65 @@ function printReleaseNotes() {
   console.log(renderMarkdown(RELEASE_NOTES));
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ─── Setup Wizard ─────────────────────────────────────────────────────────────────────────
+async function runSetupWizard(rl) {
+  const rlAsk = (prompt) => new Promise((resolve) => rl.question(prompt, resolve));
+
+  console.log('');
+  console.log(chalk.bold.cyan(' ✨ 首次运行配置向导'));
+  console.log(chalk.gray(' 请为想使用的提供商填写 API Key，直接回车可跳过。'));
+  console.log(chalk.gray(' Key 将保存到 ~/.ace-keys.json，下次启动无需重新输入。'));
+  console.log('');
+
+  for (const provider of MODEL_PROVIDERS) {
+    const savedKey = getProviderKey(provider.name);
+    const modelList = provider.models.map(m => m.id).join('、');
+
+    console.log(chalk.bold.yellow('  ' + provider.name));
+    console.log(chalk.gray('  模型：') + chalk.cyan(modelList));
+    console.log(chalk.gray('  申请 Key：') + chalk.cyan(provider.apiUrl));
+
+    if (savedKey) {
+      const masked = savedKey.slice(0, 6) + '****' + savedKey.slice(-4);
+      process.stdout.write(chalk.gray('  已保存 Key：' + masked + '，直接回车保留，或输入新 Key：'));
+    } else {
+      process.stdout.write(chalk.gray('  输入 API Key（回车跳过）：'));
+    }
+
+    const raw = await rlAsk('');
+    const trimmed = raw.trim();
+
+    if (trimmed.length >= 8) {
+      saveProviderKey(provider.name, trimmed);
+      console.log(chalk.green('  ✓ 已保存'));
+    } else if (trimmed.length > 0) {
+      console.log(chalk.yellow('  Key 过短，已跳过。'));
+    } else if (savedKey) {
+      console.log(chalk.gray('  保留旧 Key。'));
+    } else {
+      console.log(chalk.gray('  已跳过。'));
+    }
+    console.log('');
+  }
+
+  // 设置默认模型：选择第一个有 Key 的提供商
+  for (const provider of MODEL_PROVIDERS) {
+    const key = getProviderKey(provider.name);
+    if (key) {
+      currentModel = provider.models[0].id;
+      process.env.OPENAI_MODEL = currentModel;
+      process.env.OPENAI_API_KEY = key;
+      process.env.OPENAI_BASE_URL = provider.envBase;
+      console.log(chalk.gray(' 默认模型设为：') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
+      break;
+    }
+  }
+
+  console.log(chalk.green(' ✓ 配置完成！使用 /model <模型名> 随时切换。'));
+  console.log('');
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────────
 async function main() {
   const sm = new SessionManager();
   const sessions = sm.list(10);
@@ -794,8 +854,33 @@ async function main() {
   }
 
   console.log('');
-  console.log(chalk.bold.cyan(' \u6b22\u8fce\u4f7f\u7528 Claude-ACE'));
+  console.log(chalk.bold.cyan(' 欢迎使用 Claude-ACE'));
   console.log('');
+
+  // 创建 rl 实例（向导和主循环共用）
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: true,
+    historySize: 200,
+  });
+
+  // 检测是否首次运行（没有任何已保存的 Key）
+  const existingKeys = loadProviderKeys();
+  const hasAnyKey = Object.keys(existingKeys).length > 0;
+  if (!hasAnyKey) {
+    await runSetupWizard(rl);
+  } else {
+    // 自动加载当前模型对应提供商的 Key
+    const provider = findProvider(currentModel);
+    if (provider) {
+      const savedKey = getProviderKey(provider.name);
+      if (savedKey) {
+        process.env.OPENAI_API_KEY = savedKey;
+        process.env.OPENAI_BASE_URL = provider.envBase;
+      }
+    }
+  }
 
   const agent = new Agent();
   const watchdog = new WatchdogAgent(PROJECT_ROOT, { intervalMs: 300000 });
@@ -806,16 +891,9 @@ async function main() {
 
   process.on('SIGINT', () => {
     sm.save(sessionId, agent.messages, agent.stats);
-    console.log('\n' + chalk.gray(' \u518d\u89c1\uff01') + '\n');
+    console.log('\n' + chalk.gray(' 再见！') + '\n');
     watchdog.stop();
     process.exit(0);
-  });
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    terminal: true,
-    historySize: 200,
   });
 
   const askLine = () => new Promise((resolve) => {
@@ -975,6 +1053,7 @@ async function handleCommand(base, args, agent, sm, sessionId, rl, watchdog, rew
   if (base === '/watchdog')      { await handleWatchdog(watchdog, rl); return; }
   if (base === '/callgraph')     { await handleCallGraph(args); return; }
   if (base === '/model')         { await handleModel(args, rl); return; }
+  if (base === '/setup')         { await runSetupWizard(rl); return; }
   if (base === '/compact')       { await handleCompact(agent); return; }
   if (base === '/export')        { handleExport(agent, sm, sessionId); return; }
   if (base === '/init')          { handleInit(); return; }
