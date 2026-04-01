@@ -1,16 +1,30 @@
-# ACE-Coder
+# ACE-Coder (Adaptive Context Engine Coder)
 
 > **A**daptive **C**ontext **E**ngine for AI Coding Assistants
 
-ACE-Coder is a next-generation AI coding assistant prototype that reduces LLM token consumption by **84.5%** while maintaining full code understanding capability. It achieves this through an **Adaptive Context Engine (ACE)** that intelligently serves file skeletons (AST-extracted signatures) instead of full file contents when appropriate.
+ACE-Coder is a next-generation AI coding assistant built from first principles. It moves beyond the paradigm of "AI as a typist" and aims to be a true "Technical Partner". It reduces LLM token consumption by **84.5%** while implementing the five core dimensions required for the ultimate AI coding assistant.
 
-## Key Features
+Author: OpenDemon
 
-- **Adaptive Context Engine (ACE)**: Automatically chooses between full-read, skeleton, and targeted extraction strategies based on file size and type density
-- **Tree-sitter AST Parsing**: Millisecond-level parsing of TypeScript/JavaScript files to extract structural skeletons
-- **SemanticSearchTool**: Replaces grep-based search with AST-aware symbol lookup
-- **IntentVerificationTool**: Automatically generates and runs tests to verify code changes (coming soon)
-- **Multi-model Support**: Works with any OpenAI-compatible API (GPT-4.1, Gemini, DeepSeek, etc.)
+## The Five Dimensions of the Ideal AI Assistant
+
+This project implements the five core dimensions required for the ultimate AI coding assistant:
+
+### 1. From Text Search to Living Semantic Graph (`SemanticSearchTool` & `ContextLoader`)
+Instead of reading thousands of lines of text, ACE-Coder uses `tree-sitter` to parse your codebase into an Abstract Syntax Tree (AST). It extracts structural skeletons (classes, methods, interfaces) and only reads the exact lines it needs.
+**Result:** Reduces Token consumption by up to 85% for large files.
+
+### 2. From Passive Execution to Active Evolution (`WatchdogAgent`)
+ACE-Coder isn't just a REPL you have to wake up. It includes a background daemon (`WatchdogAgent`) that continuously monitors your codebase for test failures and linting errors, automatically initiating self-healing processes.
+
+### 3. From Code Generation to Intent-Driven Verification (`IntentVerificationTool`)
+When you ask ACE-Coder to change code, it doesn't just write it. It automatically generates a unit test for your intent, runs the test, and if it fails, self-heals the code until the test passes. You review the intent, not the code.
+
+### 4. From Submissive Assistant to Critical Architect (`CriticalArchitectTool`)
+If you propose a bad architecture (e.g., storing passwords in plain text), ACE-Coder will reject it. It analyzes proposals for security, performance, and scalability flaws, and provides professional counter-proposals.
+
+### 5. From Project Context to Cross-Dimensional Intuition (`CrossProjectMemory`)
+ACE-Coder maintains a persistent memory store (`~/.ace-memory`). It learns lessons from one project and recalls them in another. It also remembers your preferences (e.g., "always use vitest") so you never have to repeat yourself.
 
 ## Benchmark Results (Real LLM API)
 
@@ -22,8 +36,6 @@ Tested on real Claude Code source files using `gpt-4.1-mini`:
 | Find specific function in large file | 84,185 | 7,654 | **90.9%** |
 | Cross-file interface analysis | 14,507 | 13,072 | **9.9%** |
 | **Total** | **182,843** | **28,372** | **84.5%** |
-
-> Note: Token savings vary by task type. Skeleton strategy excels at architecture understanding and function lookup. For type-dense files (pure interfaces/types), savings are lower by design — ACE preserves critical type information.
 
 ## Architecture
 
@@ -39,7 +51,13 @@ ace-coder/
 │   │   ├── FileWriteTool.js        # File write tool
 │   │   ├── BashTool.js             # Shell command execution
 │   │   ├── GrepTool.js             # Regex file search
-│   │   └── SemanticSearchTool.js   # AST-aware symbol search
+│   │   ├── SemanticSearchTool.js   # AST-aware symbol search
+│   │   ├── IntentVerificationTool.js # Intent-driven verification loop
+│   │   └── CriticalArchitectTool.js  # AI Architect for critique
+│   ├── watchdog/
+│   │   └── WatchdogAgent.js        # Background self-healing daemon
+│   ├── memory/
+│   │   └── CrossProjectMemory.js   # Persistent cross-project memory
 │   ├── agent/
 │   │   └── Agent.js                # Core agent loop with tool orchestration
 │   └── index.js                    # Entry point (interactive REPL)
@@ -65,25 +83,16 @@ npm start
 npm run bench
 ```
 
-## How ACE Works
-
-ACE applies a three-tier strategy based on file characteristics:
-
-1. **Small files (< 200 lines)**: Full read — no overhead, no risk of missing context
-2. **Medium/Large files (≥ 200 lines)**: Skeleton extraction — Tree-sitter parses the AST and returns only imports, type definitions, and function signatures (bodies replaced with `{ ... }`)
-3. **Type-dense files** (detected via heuristic): Full read — files consisting primarily of interface/type declarations are served in full, as their "body" IS the content
-
-The LLM is instructed via system prompt to use the skeleton as a map, then call `FileRead` with `targetFunction` or `Grep` to drill into specific sections on demand.
-
 ## Roadmap
 
 - [x] Adaptive Context Engine (ACE)
 - [x] SemanticSearchTool (AST-based symbol search)
 - [x] Benchmark suite with real LLM API validation
-- [ ] IntentVerificationTool (auto test generation + self-healing loop)
-- [ ] Developer Profile Memory (persistent preference learning)
+- [x] IntentVerificationTool (auto test generation + self-healing loop)
+- [x] WatchdogAgent (background self-healing daemon)
+- [x] CriticalArchitectTool (AI Architect for critique)
+- [x] CrossProjectMemory (persistent cross-project memory)
 - [ ] Multi-Agent Orchestration (parallel subtask execution)
-- [ ] Cross-project Knowledge Transfer
 
 ## License
 
