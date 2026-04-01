@@ -24,12 +24,12 @@ export class BashTool {
       if (command.includes(blocked)) return `[Bash Error] Command blocked for safety: "${blocked}"`;
     }
     try {
-      // Windows 兼容：在 Windows 上使用 cmd.exe 执行命令
+      // execSync 默认就会调用系统 shell（Windows: cmd.exe, Unix: /bin/sh）
+      // 不需要手动指定 shell，避免 DEP0190 警告
       const opts = {
         timeout,
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
       };
       const output = execSync(command, opts);
       return output || '[Bash] Command completed with no output';

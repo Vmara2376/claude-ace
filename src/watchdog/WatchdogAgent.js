@@ -14,7 +14,7 @@ import path from 'path';
 import os from 'os';
 import { IntentVerificationTool } from '../tools/IntentVerificationTool.js';
 
-// Windows 兼容：npm 在 Windows 上是 npm.cmd
+// Windows 兼容：npm 在 Windows 上是 npm.cmd，直接调用 .cmd 无需 shell:true
 const NPM_CMD = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 // Windows 兼容：eslint 在 Windows 上是 eslint.cmd
 const ESLINT_EXT = process.platform === 'win32' ? '.cmd' : '';
@@ -94,7 +94,7 @@ export class WatchdogAgent {
           encoding: 'utf-8',
           timeout: 120000,
           env: { ...process.env },
-          shell: process.platform === 'win32',  // Windows 需要 shell:true
+          // 不使用 shell:true，Windows 上直接调用 npm.cmd 即可，避免 DEP0190 警告
         });
 
         if (result.status !== 0) {
@@ -146,7 +146,7 @@ export class WatchdogAgent {
         cwd: this.projectRoot,
         encoding: 'utf-8',
         timeout: 30000,
-        shell: process.platform === 'win32',  // Windows 需要 shell:true
+        // 不使用 shell:true，直接调用可执行文件路径，避免 DEP0190 警告
       });
 
       if (result.status !== 0 && result.stdout) {

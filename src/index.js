@@ -628,12 +628,13 @@ function findModelPrice(modelId) {
 async function handleModel(args, rl) {
   const newModel = args.trim();
   if (!newModel) {
+    // 无参数：展示分组模型列表
     console.log('');
     console.log(chalk.bold.white(' 当前模型：') + chalk.cyan(currentModel));
     console.log(chalk.gray('  切换：/model <模型名称>  例：/model deepseek-chat'));
     console.log('');
     for (const provider of MODEL_PROVIDERS) {
-      console.log('  ' + chalk.bold.yellow(provider.name) + chalk.gray('  ' + provider.apiUrl));
+      console.log('  ' + chalk.bold.yellow(provider.name) + chalk.gray('  申请 Key：') + chalk.blue.underline(provider.apiUrl));
       for (const m of provider.models) {
         const cur = m.id === currentModel ? chalk.green(' ← 当前') : '';
         const priceStr = m.price.input === 0 ? chalk.green('免费') : chalk.gray('¥' + m.price.input + '/K入');
@@ -643,16 +644,69 @@ async function handleModel(args, rl) {
     }
     return;
   }
+
+  // 有参数：切换模型 + 交互式向导
+  const provider = findProvider(newModel);
+
+  // 先切换模型
   currentModel = newModel;
   process.env.OPENAI_MODEL = newModel;
-  const provider = findProvider(newModel);
+
+  console.log('');
+  console.log(chalk.bold.white(' 模型已切换为：') + chalk.cyan(newModel) + (provider ? chalk.gray(' (' + provider.name + ')') : ''));
+
   if (provider) {
-    console.log(chalk.gray('\n  模型已切换为：') + chalk.cyan(newModel) + chalk.gray(' (' + provider.name + ')'));
-    if (!process.env.OPENAI_BASE_URL) {
-      console.log(chalk.yellow('  提示：请设置 OPENAI_BASE_URL=') + chalk.cyan(provider.envBase));
-    }
+    // 设置 Base URL
+    process.env.OPENAI_BASE_URL = provider.envBase;
+    console.log(chalk.gray('  Base URL 已自动设置：') + chalk.cyan(provider.envBase));
+    console.log('');
+
+    // 检查当前 Key 是否已设置
+    const currentKey = process.env.OPENAI_API_KEY || '';
+    const needNewKey = !currentKey;
+
+    // 判断是否是切换到不同提供商（可能需要新 Key）
+    rl.pause();
+    try {
+      let shouldSetKey = needNewKey;
+      if (!needNewKey) {
+        // 已有 Key，问是否更换
+        const change = await select({
+          message: '当前已有 API Key，是否为 ' + provider.name + ' 输入新的 Key？',
+          choices: [
+            { name: '是，输入新 Key', value: true },
+            { name: '否，保留当前 Key', value: false },
+          ],
+          theme: { prefix: '', style: { highlight: (t) => chalk.bold.cyan(t) } }
+        });
+        shouldSetKey = change;
+      }
+
+      if (shouldSetKey) {
+        console.log('');
+        console.log(chalk.bold.white('  请先到以下地址申请 API Key：'));
+        console.log('  ' + chalk.bold.cyan('➡  ' + provider.apiUrl));
+        console.log('');
+        console.log(chalk.gray('  申请完成后，将 Key 粘贴到下方：'));
+
+        const apiKeyInput = await input({
+          message: '  输入 API Key',
+          validate: (v) => v.trim().length > 8 ? true : 'Key 过短，请重新输入',
+          theme: { prefix: '', style: { highlight: (t) => chalk.bold.cyan(t) } }
+        });
+
+        const trimmedKey = apiKeyInput.trim();
+        process.env.OPENAI_API_KEY = trimmedKey;
+        console.log(chalk.green('\n  ✓ API Key 已设置，当前会话立即生效。'));
+        console.log(chalk.gray('  提示：重启后需重新设置。建议写入 .env 文件或系统环境变量。'));
+      } else {
+        console.log(chalk.gray('  保留当前 Key，如果出现 401 错误请重新运行 /model ' + newModel + ' 更换 Key。'));
+      }
+    } catch (_) {}
+    rl.resume();
   } else {
-    console.log(chalk.gray('\n  模型已切换为：') + chalk.cyan(newModel));
+    // 自定义模型，提示手动设置
+    console.log(chalk.gray('  未识别的模型，请手动设置 OPENAI_BASE_URL 和 OPENAI_API_KEY。'));
   }
   console.log('');
 }
@@ -883,10 +937,25 @@ async function main() {
     } catch (err) {
       clearToolLine();
       console.log('');
-      console.log(chalk.red(` [\u9519\u8bef] ${err.message}`));
-      if (err.message.includes('model') || err.message.includes('API') || err.message.includes('400')) {
-        console.log(chalk.gray(' \u63d0\u793a\uff1a\u8bf7\u68c0\u67e5 OPENAI_API_KEY \u548c\u6a21\u578b\u540d\u79f0\u662f\u5426\u6b63\u786e\u3002'));
-        console.log(chalk.gray(' \u5f53\u524d\u6a21\u578b\uff1a' + currentModel));
+      const isAuthError = err.message.includes('401') || err.message.includes('Authentication') ||
+                          err.message.includes('Unauthorized') || err.message.includes('invalid') ||
+                          err.message.includes('api key') || err.message.includes('API key');
+      const isModelError = err.message.includes('model') || err.message.includes('400') ||
+                           err.message.includes('API') || err.message.includes('not found');
+
+      console.log(chalk.red(` [错误] ${err.message}`));
+
+      if (isAuthError) {
+        const provider = findProvider(currentModel);
+        console.log(chalk.yellow('\n  API Key 无效或已过期。'));
+        if (provider) {
+          console.log(chalk.gray('  当前模型：') + chalk.cyan(currentModel) + chalk.gray(' (' + provider.name + ')'));
+          console.log(chalk.gray('  申请 / 查看 Key：') + chalk.bold.cyan(provider.apiUrl));
+        }
+        console.log(chalk.gray('  输入 /model ' + currentModel + ' 重新设置 Key'));
+      } else if (isModelError) {
+        console.log(chalk.gray(' 提示：请检查模型名称是否正确。当前模型：' + currentModel));
+        console.log(chalk.gray(' 输入 /model 查看可用模型列表'));
       }
       console.log('');
     }
